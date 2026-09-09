@@ -15,6 +15,7 @@ from torch.distributed._shard.sharding_spec import (
     ShardMetadata,
 )
 from torch.distributed.checkpoint import (
+    async_save,
     FileSystemReader,
     FileSystemWriter,
     load,
@@ -153,6 +154,28 @@ class TestDistributedStateDictSaveLoad(TestCase):
                 no_dist=True,
             )
 
+            assert_state_dict_equal(self, state_dict_to_load_to, state_dict_to_save)
+
+    def test_async_save_cached_state_dict(self) -> None:
+        with tempfile.TemporaryDirectory() as path:
+            state_dict_to_save = MyTestModule().state_dict()
+            fs_writer = FileSystemWriter(path=path, cache_staged_state_dict=True)
+            fut = async_save(
+                state_dict=state_dict_to_save,
+                storage_writer=fs_writer,
+                no_dist=True,
+            )
+            fut.result()
+            self.assertIsNotNone(fs_writer.state_dict_cache)
+            fs_writer.close()
+            self.assertIsNone(fs_writer.state_dict_cache)
+
+            state_dict_to_load_to = MyTestModule().state_dict()
+            load_state_dict(
+                state_dict=state_dict_to_load_to,
+                storage_reader=FileSystemReader(path=path),
+                no_dist=True,
+            )
             assert_state_dict_equal(self, state_dict_to_load_to, state_dict_to_save)
 
 

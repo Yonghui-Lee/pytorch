@@ -21,6 +21,7 @@ from torch.distributed._tensor.placement_types import Replicate, Shard
 from torch.distributed.checkpoint._state_dict_stager import StateDictStager
 from torch.distributed.checkpoint.staging import (
     _ReplicationStager,
+    BlockingAsyncStager,
     DefaultStager,
     StagingOptions,
 )
@@ -1477,6 +1478,59 @@ class TestReplicationStager(DTensorTestBase):
 
             # Clean up
             stager.close()
+
+
+class TestBlockingAsyncStager(TestCase):
+    def test_stage_uncached(self):
+        stager = BlockingAsyncStager(cache_staged_state_dict=False)
+        t = torch.randn(4, 4)
+        sd = {"weight": t}
+        staged = stager.stage(sd)
+        self.assertIsNot(staged["weight"], t)
+        self.assertTrue(torch.equal(staged["weight"], t))
+        self.assertIsNone(stager.state_dict_cache)
+        # Verify isolation: mutating source does not mutate staged
+        t.fill_(42.0)
+        self.assertFalse(torch.equal(staged["weight"], t))
+
+    def test_stage_cached_on_cpu(self):
+        stager = BlockingAsyncStager(cache_staged_state_dict=True)
+        t = torch.randn(4, 4)
+        sd = {"weight": t}
+        staged1 = stager.stage(sd)
+        self.assertIsNotNone(stager.state_dict_cache)
+        self.assertTrue(torch.equal(staged1["weight"], t))
+        if torch.accelerator.is_available():
+            self.assertTrue(staged1["weight"].is_pinned())
+        else:
+            self.assertFalse(staged1["weight"].is_pinned())
+
+        # Second stage should reuse the cached tensor storage
+        t.fill_(1.0)
+        staged2 = stager.stage(sd)
+        self.assertEqual(
+            staged1["weight"].untyped_storage().data_ptr(),
+            staged2["weight"].untyped_storage().data_ptr(),
+        )
+        self.assertTrue(torch.equal(staged2["weight"], t))
+
+    def test_stage_type_check(self):
+        for cached in [False, True]:
+            with self.subTest(cached=cached):
+                stager = BlockingAsyncStager(
+                    cache_staged_state_dict=cached, type_check=True
+                )
+                sd = {"invalid_obj": object()}
+                with self.assertRaises(ValueError):
+                    stager.stage(sd)
+
+    def test_close(self):
+        stager = BlockingAsyncStager(cache_staged_state_dict=True)
+        sd = {"weight": torch.randn(4, 4)}
+        stager.stage(sd)
+        self.assertIsNotNone(stager.state_dict_cache)
+        stager.close()
+        self.assertIsNone(stager.state_dict_cache)
 
 
 if __name__ == "__main__":

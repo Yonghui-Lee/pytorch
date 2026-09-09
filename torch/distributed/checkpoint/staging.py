@@ -313,8 +313,13 @@ class BlockingAsyncStager(AsyncStager):
             return staged_state_dict
 
         if self.state_dict_cache is None:
-            self.state_dict_cache = _create_cpu_state_dict(state_dict, pin_memory=True)
-        return _copy_state_dict(state_dict, self.state_dict_cache)
+            pin_memory = torch.accelerator.is_available()
+            self.state_dict_cache = _create_cpu_state_dict(
+                state_dict, pin_memory=pin_memory
+            )
+        return _copy_state_dict(
+            state_dict, self.state_dict_cache, type_check=self.type_check
+        )
 
     def synchronize_staging(self) -> None:
         """
@@ -322,7 +327,10 @@ class BlockingAsyncStager(AsyncStager):
         """
 
     def close(self) -> None:
-        pass
+        """
+        Clean up resources and release cached staged state_dict.
+        """
+        self.state_dict_cache = None
 
 
 class _ReplicationStager(AsyncStager):
